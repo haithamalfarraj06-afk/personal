@@ -1,0 +1,57 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function ownsNewDoc() {
+      return signedIn() && request.resource.data.user_id == request.auth.uid;
+    }
+
+    function ownsExistingDoc() {
+      return signedIn() && resource.data.user_id == request.auth.uid;
+    }
+
+    function ownsUpdatedDoc() {
+      return signedIn()
+        && resource.data.user_id == request.auth.uid
+        && request.resource.data.user_id == request.auth.uid;
+    }
+
+    match /profiles/{userId} {
+      allow read, write: if signedIn() && userId == request.auth.uid;
+    }
+
+    match /goals/{docId} {
+      allow create: if ownsNewDoc();
+      allow read, delete: if ownsExistingDoc();
+      allow update: if ownsUpdatedDoc();
+    }
+
+    match /tasks/{docId} {
+      allow create: if ownsNewDoc();
+      allow read, delete: if ownsExistingDoc();
+      allow update: if ownsUpdatedDoc();
+    }
+
+    match /matches/{docId} {
+      allow create: if ownsNewDoc();
+      allow read, delete: if ownsExistingDoc();
+      allow update: if ownsUpdatedDoc();
+    }
+
+    match /training_sessions/{docId} {
+      allow create: if ownsNewDoc();
+      allow read, delete: if ownsExistingDoc();
+      allow update: if ownsUpdatedDoc();
+    }
+
+    match /study_sessions/{docId} {
+      allow create: if ownsNewDoc();
+      allow read, delete: if ownsExistingDoc();
+      allow update: if ownsUpdatedDoc();
+    }
+  }
+}
