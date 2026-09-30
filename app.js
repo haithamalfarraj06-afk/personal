@@ -435,7 +435,41 @@ view.addEventListener('change', e => {
 });
 
 // ---------- start ----------
+// Render the authentication screen immediately. Do not wait for Firebase
+// Auth's network/state check, otherwise the page can look frozen on first load.
 (async () => {
   chrome();
-  auth.onAuthStateChanged(async u => { if (u) await enter(u); else { user = null; render(); } });
+  render();
+
+  try {
+    auth.onAuthStateChanged(async u => {
+      try {
+        if (u) {
+          await enter(u);
+        } else {
+          user = null;
+          S = {};
+          render();
+        }
+      } catch (e) {
+        console.error('Auth state error:', e);
+        user = null;
+        S = {};
+        authNote = t('netErr');
+        render();
+      }
+    }, error => {
+      console.error('Firebase Auth observer error:', error);
+      if (!user) {
+        authNote = t('netErr');
+        render();
+      }
+    });
+  } catch (e) {
+    console.error('Firebase Auth initialization error:', e);
+    if (!user) {
+      authNote = t('netErr');
+      render();
+    }
+  }
 })();
