@@ -1,5 +1,3 @@
-const db = firebase.firestore();
-const auth = firebase.auth();
 const $ = s => document.querySelector(s);
 const view = $('#view');
 
@@ -64,9 +62,9 @@ const T = {
 
 let lang = localStorage.getItem('ps-lang') || 'ar';
 let theme = localStorage.getItem('ps-theme') || 'dark';
-let user = null, S = {}, pend = {}, pt = null, authNote = '';
+const GUEST_UID = 'guest-local';
+let user = { uid: GUEST_UID }, S = {}, pend = {}, pt = null, authNote = '';
 let route = (location.hash || '#home').slice(1);
-let authMode = localStorage.getItem('ps-acct') ? 'signin' : 'signup';
 
 const t = k => T[lang][k] ?? k;
 const o = (g, k) => T[lang][g][k] ?? k;
@@ -104,121 +102,44 @@ function setPref(k, v) {
   if (user && S.profile) patchProfile({ [k]: v });
 }
 
-// ---------- profile autosave ----------
+// ---------- profile autosave (local-first mode) ----------
+function saveLocal() {
+  try { localStorage.setItem('ps-data', JSON.stringify(S)); status('saved'); }
+  catch (e) { console.error(e); status('error'); toast(t('err')); }
+}
 function patchProfile(p, delay = 0) {
-  Object.assign(S.profile, p); Object.assign(pend, p); status('saving');
-  clearTimeout(pt); pt = setTimeout(flush, delay);
-}
-async function flush() {
+  Object.assign(S.profile, p);
   clearTimeout(pt);
-  if (!user || !Object.keys(pend).length) return;
-  const p = pend; pend = {};
-  try {
-    await db.collection('profiles').doc(user.uid).set({ ...p, user_id: user.uid }, { merge: true });
-    if (!Object.keys(pend).length) status('saved');
-  } catch (error) {
-    console.error(error); pend = { ...p, ...pend }; status('error');
-  }
+  pt = setTimeout(saveLocal, delay);
 }
+async function flush() { clearTimeout(pt); if (S.profile) saveLocal(); }
 addEventListener('pagehide', flush);
 document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); });
 
 // ---------- data ----------
-async function load() {
-  const names = ['tasks', 'goals', 'matches', 'training_sessions', 'study_sessions'];
-  const profileSnap = await db.collection('profiles').doc(user.uid).get();
-  const docs = await Promise.all(names.map(n => db.collection(n).where('user_id', '==', user.uid).get()));
-  const sortRows = snap => snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => {
-    const av = a.created_at?.toMillis ? a.created_at.toMillis() : (a.created_at ? new Date(a.created_at).getTime() : 0);
-    const bv = b.created_at?.toMillis ? b.created_at.toMillis() : (b.created_at ? new Date(b.created_at).getTime() : 0);
-    return bv - av;
-  });
-  const p = profileSnap.exists ? { user_id: user.uid, ...profileSnap.data() } : null;
-  S = { profile: p || { user_id: user.uid, onboarded: false, develop: [] }, ...Object.fromEntries(names.map((n, i) => [KEY[n], sortRows(docs[i])])) };
-  if (p && p.lang) { lang = p.lang; localStorage.setItem('ps-lang', lang); }
-  if (p && p.theme) { theme = p.theme; localStorage.setItem('ps-theme', p.theme); }
-  chrome();
-}
-async function enter(u) {
-  user = u; localStorage.setItem('ps-acct', '1'); S = {}; render();
-  try { await load(); } catch (e) { console.error(e); S = { fail: true }; }
-  render();
-}
 
-// ---------- auth ----------
-let authEmail = '';
-function authView() {
-  const m = authMode, pwF = (id, key, ac) => `<label>${t(key)}<input id="${id}" type="password" dir="ltr" minlength="6" autocomplete="${ac}" required></label>`;
-  const emF = `<label>${t('email')}<input id="em" type="email" dir="ltr" autocomplete="email" required></label>`;
-  const f = {
-    signup: ['signupT', emF + pwF('pw', 'password', 'new-password'), 'signupB'],
-    signin: ['signinT', emF + pwF('pw', 'password', 'current-password'), 'signinB'],
-    forgot: ['resetT', emF, 'sendCode']
-  }[m];
-  const links = m === 'signin' ? `<button class="link" data-act="forgot">${t('forgot')}</button><button class="link" data-act="authmode">${t('noAcc')}</button>`
-    : m === 'signup' ? `<button class="link" data-act="authmode">${t('haveAcc')}</button>`
-    : `<button class="link" data-act="back">${t('back')}</button>`;
-  return `<div class="auth card"><h1>${t(f[0])}</h1>${m === 'signin' || m === 'signup' ? `<p class="muted">${t('authSub')}</p>` : ''}
-  ${authNote ? `<p class="note">${authNote}</p>` : ''}
-  <form id="authForm" class="form">${f[1]}<p id="amsg" class="err"></p><button class="btn big">${t(f[2])}</button></form>${links}</div>`;
-}
-async function submitAuth() {
+function load() {
   try {
-    await Promise.race([authStep(), new Promise((_, rj) => setTimeout(() => rj(new Error('timeout')), 15000))]);
+    const raw = localStorage.getItem('ps-data');
+    const data = raw ? JSON.parse(raw) : null;
+    const empty = { user_id: GUEST_UID, onboarded: false, develop: [] };
+    S = data && data.profile ? {
+      profile: { ...empty, ...data.profile, user_id: GUEST_UID },
+      tasks: Array.isArray(data.tasks) ? data.tasks : [],
+      goals: Array.isArray(data.goals) ? data.goals : [],
+      matches: Array.isArray(data.matches) ? data.matches : [],
+      training: Array.isArray(data.training) ? data.training : [],
+      study: Array.isArray(data.study) ? data.study : []
+    } : { profile: empty, tasks: [], goals: [], matches: [], training: [], study: [] };
+    if (S.profile.lang) { lang = S.profile.lang; localStorage.setItem('ps-lang', lang); }
+    if (S.profile.theme) { theme = S.profile.theme; localStorage.setItem('ps-theme', S.profile.theme); }
+    chrome();
   } catch (e) {
     console.error(e);
-    const m = $('#amsg'), b = $('#authForm button.btn');
-    if (b) b.disabled = false;
-    if (m) {
-      m.textContent = t('netErr');
-      const d = document.createElement('small'); d.className = 'ltr'; d.textContent = e.message + ' …'; m.appendChild(d);
-      d.textContent = e.message + ' · ' + await diagnose();
-    }
+    S = { profile: { user_id: GUEST_UID, onboarded: false, develop: [] }, tasks: [], goals: [], matches: [], training: [], study: [] };
   }
 }
-async function diagnose() {
-  return 'Firebase Authentication / Firestore';
-}
-
-async function authStep() {
-  const g = id => ($(id) || {}).value || '', msg = $('#amsg'), btn = $('#authForm button.btn');
-  const fail = m => { msg.textContent = m; btn.disabled = false; };
-  msg.textContent = ''; btn.disabled = true;
-
-  if (authMode === 'forgot') {
-    const email = g('#em').trim(); if (!email) return fail(t('authBad'));
-    try {
-      await auth.sendPasswordResetEmail(email);
-      authNote = lang === 'ar' ? 'تم إرسال رابط استعادة كلمة المرور إلى بريدك الإلكتروني.' : 'A password reset link was sent to your email.';
-      authMode = 'signin';
-      return render();
-    } catch (error) { return fail(error.message); }
-  }
-
-  const email = g('#em').trim(), pw = g('#pw');
-  if (!email || pw.length < 6) return fail(t('authBad'));
-  try {
-    if (authMode === 'signup') {
-      const cred = await auth.createUserWithEmailAndPassword(email, pw);
-      try { await cred.user.sendEmailVerification(); } catch (_) {}
-      await enter(cred.user);
-    } else {
-      const cred = await auth.signInWithEmailAndPassword(email, pw);
-      await enter(cred.user);
-    }
-  } catch (error) { fail(error.message); }
-}
-
-async function changePw(f) {
-  const d = Object.fromEntries(new FormData(f));
-  if (d.pw.length < 6 || d.pw !== d.pw2) { toast(t('pwBad')); return; }
-  const btn = f.querySelector('button'); btn.disabled = true;
-  try {
-    await auth.currentUser.updatePassword(d.pw);
-    f.reset(); toast(t('pwDone'));
-  } catch (error) { toast(error.message); }
-  btn.disabled = false;
-}
+function enter() { user = { uid: GUEST_UID }; load(); render(); }
 
 // ---------- profile form (setup + profile page) ----------
 function pform() {
@@ -328,11 +249,7 @@ const V = {
   },
   profile() {
     return `<h1>${t('settings')}</h1><h2>${t('profile')}</h2><div class="form">${pform()}</div>
-    <section class="card"><h2>${t('security')}</h2><form id="pwForm" class="form">
-      <label>${t('newPw')}<input type="password" name="pw" dir="ltr" minlength="6" autocomplete="new-password" required></label>
-      <label>${t('confirmPw')}<input type="password" name="pw2" dir="ltr" minlength="6" autocomplete="new-password" required></label>
-      <button class="btn">${t('changePw')}</button></form></section>
-    <button class="btn ghost big" data-act="logout">${t('logout')}</button>`;
+    <p class="muted center">بياناتك محفوظة على هذا الجهاز حاليًا. تسجيل الدخول سيتم إضافته لاحقًا.</p>`;
   }
 };
 const NAV = [['home', '🏠'], ['goals', '🎯'], ['matches', '⚽'], ['training', '🏃'], ['study', '📚'], ['reports', '📊'], ['profile', '⚙️']];
@@ -341,7 +258,6 @@ if (!V[route]) route = 'home';
 function render() {
   const n = $('#nav');
   n.innerHTML = '';
-  if (!user) { view.innerHTML = authView(); return; }
   if (S.fail) { view.innerHTML = `<p class="muted center">${t('loadFail')}</p><button class="btn big" data-act="retry">${t('retry')}</button>`; return; }
   if (!S.profile) { view.innerHTML = `<p class="muted center">${t('loading')}</p>`; return; }
   if (!S.profile.onboarded) {
@@ -368,20 +284,18 @@ const FORMS = {
   study: ['study_sessions', d => d.subject.trim() && ({ subject: d.subject.trim(), minutes: +d.minutes, progress: +d.progress, studied_on: today() })]
 };
 async function addRow(f) {
-  const [tb, build] = FORMS[f.dataset.form], row = build(Object.fromEntries(new FormData(f)));
+  const [tb, build] = FORMS[f.dataset.form];
+  const row = build(Object.fromEntries(new FormData(f)));
   if (!row) return;
   const btn = f.querySelector('button.btn'); btn.disabled = true; status('saving');
-  try {
-    const ref = db.collection(tb).doc();
-    const data = { ...row, user_id: user.uid, created_at: firebase.firestore.FieldValue.serverTimestamp() };
-    await ref.set(data);
-    S[KEY[tb]].unshift({ id: ref.id, ...row, user_id: user.uid, created_at: new Date() });
-    status('saved'); render();
-  } catch (error) {
-    console.error(error); status('error'); toast(t('err')); btn.disabled = false;
-  }
+  const id = (crypto.randomUUID ? crypto.randomUUID() : Date.now() + '-' + Math.random().toString(36).slice(2));
+  const key = KEY[tb];
+  const item = { id, ...row, user_id: GUEST_UID, created_at: new Date().toISOString() };
+  S[key].unshift(item);
+  saveLocal();
+  f.reset();
+  render();
 }
-
 // ---------- events ----------
 async function reload() { try { await load(); } catch (e) { console.error(e); } render(); }
 
@@ -389,9 +303,6 @@ document.addEventListener('click', async e => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   const a = b.dataset.act, v = b.dataset.v, id = b.dataset.id;
   if (a === 'lang' || a === 'theme') setPref(a, v);
-  else if (a === 'authmode') { authMode = authMode === 'signup' ? 'signin' : 'signup'; authNote = ''; render(); }
-  else if (a === 'forgot') { authMode = 'forgot'; authNote = ''; render(); }
-  else if (a === 'back') { authMode = 'signin'; authNote = ''; render(); }
   else if (a === 'go') { flush(); route = v; history.replaceState(null, '', '#' + v); render(); scrollTo(0, 0); }
   else if (a === 'dev') {
     const arr = S.profile.develop || [];
@@ -405,7 +316,7 @@ document.addEventListener('click', async e => {
   else if (a === 'tog') {
     const x = S.tasks.find(i => i.id === id); if (!x) return;
     x.done = !x.done; x.done_at = x.done ? new Date().toISOString() : null; render(); status('saving');
-    try { await db.collection('tasks').doc(id).update({ done: x.done, done_at: x.done_at }); status('saved'); } catch (error) { console.error(error); toast(t('err')); status('error'); await reload(); }
+    saveLocal();
   }
   else if (a === 'del') {
     const tb = b.dataset.t;
@@ -413,16 +324,14 @@ document.addEventListener('click', async e => {
     S[KEY[tb]] = S[KEY[tb]].filter(x => x.id !== id);
     if (tb === 'goals') S.tasks.forEach(x => { if (x.goal_id === id) x.goal_id = null; });
     render(); status('saving');
-    try { await db.collection(tb).doc(id).delete(); status('saved'); } catch (error) { console.error(error); toast(t('err')); status('error'); await reload(); }
+    saveLocal();
   }
-  else if (a === 'logout') { await flush(); await auth.signOut(); user = null; S = {}; authMode = 'signin'; localStorage.removeItem('ps-acct'); render(); }
-  else if (a === 'retry') enter(user);
+  else if (a === 'retry') enter();
 });
 
 view.addEventListener('submit', e => {
   e.preventDefault();
-  if (e.target.id === 'authForm') submitAuth();
-  else if (e.target.id === 'pwForm') changePw(e.target);
+  if (e.target.id === 'pwForm') e.preventDefault();
   else if (e.target.dataset.form) addRow(e.target);
 });
 view.addEventListener('input', e => {
@@ -435,41 +344,5 @@ view.addEventListener('change', e => {
 });
 
 // ---------- start ----------
-// Render the authentication screen immediately. Do not wait for Firebase
-// Auth's network/state check, otherwise the page can look frozen on first load.
-(async () => {
-  chrome();
-  render();
-
-  try {
-    auth.onAuthStateChanged(async u => {
-      try {
-        if (u) {
-          await enter(u);
-        } else {
-          user = null;
-          S = {};
-          render();
-        }
-      } catch (e) {
-        console.error('Auth state error:', e);
-        user = null;
-        S = {};
-        authNote = t('netErr');
-        render();
-      }
-    }, error => {
-      console.error('Firebase Auth observer error:', error);
-      if (!user) {
-        authNote = t('netErr');
-        render();
-      }
-    });
-  } catch (e) {
-    console.error('Firebase Auth initialization error:', e);
-    if (!user) {
-      authNote = t('netErr');
-      render();
-    }
-  }
-})();
+chrome();
+enter();
